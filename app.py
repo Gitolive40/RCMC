@@ -2,110 +2,77 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# 1. CONFIGURATION DE LA PAGE
-st.set_page_config(
-    page_title="Dashboard Camping La Civelle",
-    page_icon="⛺",
-    layout="wide"
-)
+st.set_page_config(page_title="Dashboard Camping La Civelle", layout="wide")
 
-# 2. FONCTION DE CHARGEMENT ET NETTOYAGE
 @st.cache_data
 def load_data():
-    file_path = 'cleaned_data_camping.csv'
-    
-    # Test de lecture avec différents séparateurs (virgule puis point-virgule)
+    # Lecture flexible (détection séparateur , ou ;)
     try:
-        df = pd.read_csv(file_path, sep=',')
-        if len(df.columns) < 2: # Si pandas ne voit qu'une seule colonne, le séparateur est faux
-            df = pd.read_csv(file_path, sep=';')
+        df = pd.read_csv('cleaned_data_camping.csv', sep=',')
+        if len(df.columns) < 2: df = pd.read_csv('cleaned_data_camping.csv', sep=';')
     except:
-        df = pd.read_csv(file_path, sep=';')
+        df = pd.read_csv('cleaned_data_camping.csv', sep=';')
 
-    # Nettoyage des noms de colonnes (enlève les espaces et sauts de ligne)
+    # 1. Nettoyage des noms de colonnes
     df.columns = df.columns.str.replace('\n', ' ').str.strip()
 
-    # Mappage forcé des noms de colonnes si nécessaire
-    # On s'assure que 'Revenue_HT' existe même si le CSV a gardé l'ancien nom
-    rename_dict = {
-        'Montant Séjours HT': 'Revenue_HT',
-        'Montant\nSéjours HT': 'Revenue_HT',
-        'Montant_HT': 'Revenue_HT'
-    }
-    df.rename(columns=rename_dict, inplace=True)
+    # 2. Identification de la colonne Revenue (même si le nom change)
+    # On cherche une colonne qui contient "Montant", "Revenue", "CA" ou "Prix"
+    for col in df.columns:
+        if any(key in col for key in ['Montant', 'Revenue', 'CA', 'HT', 'Prix']):
+            df.rename(columns={col: 'Revenue_HT'}, inplace=True)
+            break
 
-    # Conversion des données numériques et gestion des vides
-    numeric_cols = ['Nuits', 'Nuitées', 'Séjours', 'Revenue_HT']
-    for col in numeric_cols:
+    # 3. Traitement des nombres (Gestion des virgules françaises "1200,50")
+    cols_numeriques = ['Nuits', 'Nuitées', 'Séjours', 'Revenue_HT']
+    for col in cols_numeriques:
         if col in df.columns:
+            # On convertit en texte, on remplace la virgule par un point, puis en nombre
+            df[col] = df[col].astype(str).str.replace(',', '.').str.replace(' ', '')
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-    
+
+    # 4. Forcer l'année en entier
     if 'ANNEE' in df.columns:
         df['ANNEE'] = pd.to_numeric(df['ANNEE'], errors='coerce').fillna(0).astype(int)
 
     return df
 
-# Chargement effectif
 df = load_data()
 
-# 3. TITRE ET STYLE
-st.title("⛺ Dashboard de Pilotage - Camping La Civelle")
-st.markdown("---")
+st.title("📊 Reporting - Camping La Civelle")
 
-# 4. BARRE LATÉRALE (FILTRES)
-st.sidebar.header("⚙️ Paramètres d'affichage")
+# --- FILTRES ---
+st.sidebar.header("Filtres")
+annees = sorted(df['ANNEE'].unique(), reverse=True)
+annee_sel = st.sidebar.selectbox("Année", annees)
 
-if 'ANNEE' in df.columns:
-    annees_dispos = sorted(df['ANNEE'].unique(), reverse=True)
-    annee_selected = st.sidebar.selectbox("Année à analyser", annees_dispos)
-else:
-    st.error("La colonne 'ANNEE' est introuvable dans le fichier.")
-    st.stop()
+# --- CALCULS ---
+data = df[df['ANNEE'] == annee_sel]
+ca = data['Revenue_HT'].sum()
+nuitees = data['Nuitées'].sum()
+sejours = data['Séjours'].sum()
+panier = ca / sejours if sejours > 0 else 0
 
-mois_order = ['JANVIER', 'FÉVRIER', 'MARS', 'AVRIL', 'MAI', 'JUIN', 
-              'JUILLET', 'AOÛT', 'SEPTEMBRE', 'OCTOBRE', 'NOVEMBRE', 'DÉCEMBRE']
+# --- AFFICHAGE ---
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("CA HT Total", f"{ca:,.2f} €")
+c2.metric("Nuitées", f"{int(nuitees):,}")
+c3.metric("Séjours", f"{int(sejours):,}")
+c4.metric("Panier Moyen", f"{panier:.2f} €")
 
-# 5. CALCUL DES INDICATEURS (KPI)
-data_annee = df[df['ANNEE'] == annee_selected]
-total_ca = data_annee['Revenue_HT'].sum()
-total_nuitees = data_annee['Nuitées'].sum()
-total_sejours = data_annee['Séjours'].sum()
+st.divider()
 
-# Comparaison N-1
-data_n_1 = df[df['ANNEE'] == annee_selected - 1]
-ca_n_1 = data_n_1['Revenue_HT'].sum()
-evol_ca = ((total_ca - ca_n_1) / ca_n_1 * 100) if ca_n_1 > 0 else 0
+# Graphique Saisonnalité
+mois_ordre = ['JANVIER', 'FÉVRIER', 'MARS', 'AVRIL', 'MAI', 'JUIN', 'JUILLET', 'AOÛT', 'SEPTEMBRE', 'OCTOBRE', 'NOVEMBRE', 'DÉCEMBRE']
+st.subheader("Évolution Mensuelle du Chiffre d'Affaires")
+fig = px.line(df.groupby(['ANNEE', 'MOIS'])['Revenue_HT'].sum().reset_index(), 
+             x='MOIS', y='Revenue_HT', color='ANNEE', markers=True,
+             category_orders={"MOIS": mois_ordre})
+st.plotly_chart(fig, use_container_width=True)
 
-# 6. AFFICHAGE DES MÉTRIQUES EN COLONNES
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Chiffre d'Affaires HT", f"{total_ca:,.2f} €", f"{evol_ca:+.1f}% vs N-1")
-col2.metric("Nuitées", f"{int(total_nuitees):,}")
-col3.metric("Séjours", f"{int(total_sejours):,}")
-col4.metric("Panier Moyen", f"{ (total_ca/total_sejours if total_sejours > 0 else 0):.2f} €")
-
-st.markdown("### 📈 Analyses Graphiques")
-
-# 7. GRAPHIQUES
-row2_col1, row2_col2 = st.columns(2)
-
-with row2_col1:
-    st.write("**Saisonnalité du Chiffre d'Affaires (€)**")
-    # On prépare les données pour que tous les mois s'affichent dans l'ordre
-    df_saison = df.groupby(['ANNEE', 'MOIS'], observed=True)['Revenue_HT'].sum().reset_index()
-    fig_ca = px.line(df_saison, x='MOIS', y='Revenue_HT', color='ANNEE',
-                     category_orders={"MOIS": mois_order}, markers=True,
-                     labels={'Revenue_HT': 'CA HT (€)', 'MOIS': 'Mois'})
-    st.plotly_chart(fig_ca, use_container_width=True)
-
-with row2_col2:
-    st.write("**Répartition du CA par Type de Forfait**")
-    top_tarifs = data_annee.groupby('Tarif')['Revenue_HT'].sum().sort_values(ascending=False).head(8).reset_index()
-    fig_pie = px.pie(top_tarifs, values='Revenue_HT', names='Tarif', hole=0.4,
-                     color_discrete_sequence=px.colors.sequential.RdBu)
-    st.plotly_chart(fig_pie, use_container_width=True)
-
-# 8. TABLEAU DE DONNÉES
-with st.expander("🔍 Voir le détail des données brutes"):
-    st.dataframe(data_annee, use_container_width=True)
-
-st.sidebar.info(f"Données chargées : {len(df)} lignes.")
+# Affichage des erreurs de colonnes pour debug si besoin
+if ca == 0:
+    st.warning("⚠️ Le chiffre d'affaires est à 0. Vérifiez que votre fichier contient bien une colonne nommée 'Revenue_HT' ou 'Montant Séjours HT'.")
+    if st.checkbox("Voir les colonnes détectées"):
+        st.write(df.columns.tolist())
+        st.write(df.head())
